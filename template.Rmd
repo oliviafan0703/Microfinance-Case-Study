@@ -1,0 +1,987 @@
+---
+title: "Case 1 Report"
+author: \normalsize Olivia Fan, Mona Su, Shreyas Hallur, Connor Wilchusky
+format: pdf
+editor: visual
+execute:
+  echo = FALSE
+  show_col_types = FALSE
+  include = FALSE
+bibliography: references.bib
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, echo = FALSE) 
+```
+
+```{r check-packages}
+packages <- c('tidyverse','ggplot2', 'dplyr', 'forcats','broom','knitr','kableExtra','patchwork','ragg','survival','lubridate', 'pROC','survminer','ROCR')
+install.packages(setdiff(packages, rownames(installed.packages())))
+```
+
+```{r load packages, include=FALSE}
+
+library(tidyverse)
+library(ggplot2)
+library(forcats)
+library(broom)
+library(knitr)
+library(kableExtra)
+library(patchwork)
+library(ragg)
+library(survival)
+library(lubridate)
+library(pROC)
+library(survival)
+library(survminer)
+library(ROCR)
+```
+
+## 1. Introduction
+
+### 1.1 Background
+
+Traditional financial institutions have immense financial resources and loan out to enterprises from the international level to the local level, but they often require collateral. Micro-finance is therefore argued by some to be a useful tool to assist with enterprises and people that lack such collateral and still have a need to access capital (Robert Cull & Jonathan Morduch). Given the lack of collateral however, lenders in a micro-finance system take on a risk of default with no possible way for recoupment. It is because of this risk that micro-finance systems needed to minimize the rate of default to remain practical (Kassim, S. H., & Rahman, M.). The purpose of this report is to analyze socio-demographic and geographic factors involved in the risk of default as well as the time to default. Utilizing the knowledge of these factors, the report also seeks to make an estimation about the probability of the default.
+
+The report's analysis will begin with exploratory data analysis to better contextualize the Kiva 2012 database that we are working with as well as a discussion on data processing. From this, to answer our major research questions, we have constructed a variety of models (Exponential AFT, Weibull AFT, Log-Normal AFT) and performed operations with logistic regression and backward selection. Through these operations we have developed results that provide intuition on the interplays between socio-demographic and geographic factors and the risk of/time to default. After presentation of these models we discuss model assumptions and interpretation to provide value to potential investors on the risk of default.
+
+```{r readdata, show_col_types = FALSE}
+loan_repay <- read_csv("../instructor_data/loan_repayments.csv", show_col_types = FALSE)
+loan_schedule <- read_csv("../instructor_data/loan_schedule.csv", show_col_types = FALSE)
+lenders_clean <- read_csv("../instructor_data/lenders_clean.csv", show_col_types = FALSE)
+loans_clean <- read_csv("../instructor_data/loans_clean.csv", show_col_types = FALSE)
+```
+
+```{r data-cleaning}
+#lenders_clean
+lenders_clean<-lenders_clean%>%select(-member_since_hr,-member_since_min, -occupational_info,-video.youtube_id)
+lenders_clean$member_since = as.Date(paste(lenders_clean$member_since_yr, lenders_clean$member_since_mo, lenders_clean$member_since_day), "%Y %m %d")
+lenders_clean<-lenders_clean%>%
+  select(-member_since_yr,-member_since_mo,-member_since_day)
+lenders_clean<-lenders_clean%>%
+  select(-posted_min, -posted_sec)
+lenders_clean$posted_date = as.Date(paste(lenders_clean$posted_yr, lenders_clean$posted_mo, lenders_clean$posted_day), "%Y %m %d")
+lenders_clean<-lenders_clean%>%
+  select(-posted_hr,posted_yr,-posted_mo,-posted_day)
+lenders_clean<-lenders_clean%>%
+  select(-planned_expiration_hr,-planned_expiration_min, -planned_expiration_sec)
+lenders_clean$planned_expiration_date = as.Date(paste(lenders_clean$planned_expiration_yr, lenders_clean$planned_expiration_mo, lenders_clean$planned_expiration_day), "%Y %m %d")
+lenders_clean<-lenders_clean%>%
+  select(-planned_expiration_yr,-planned_expiration_mo,-planned_expiration_day)
+
+# Combine processed dates into one column
+loan_repay$processed_date = as.Date(paste(loan_repay$processed_yr, loan_repay$processed_mo, loan_repay$processed_day), "%Y %m %d")
+  
+loan_repay$settlement_date = as.Date(paste(loan_repay$settlement_yr, loan_repay$settlement_mo, loan_repay$settlement_day), "%Y %m %d")
+loan_repay<-loan_repay%>%
+  select(-settlement_yr,-settlement_mo,-settlement_day)
+
+# data cleaning for loan_schedule
+# Combine scheduled due dates into one column
+loan_schedule$scheduled_due_date = as.Date(paste(loan_schedule$scheduled_payments.due_yr, loan_schedule$scheduled_payments.due_mo, loan_schedule$scheduled_payments.due_day), "%Y %m %d")
+loan_schedule<-loan_schedule%>%
+  select(-scheduled_payments.due_yr,-scheduled_payments.due_mo,-scheduled_payments.due_day)
+loan_schedule$local_due_date = as.Date(paste(loan_schedule$local_payments.due_yr, loan_schedule$local_payments.due_mo, loan_schedule$local_payments.due_day), "%Y %m %d")
+loan_schedule<-loan_schedule%>%
+  select(-local_payments.due_yr,-local_payments.due_mo,-local_payments.due_day)
+
+# REMOVE refunded columns because they never got their loans
+loans_clean<-loans_clean%>%filter(status!="refunded")%>%
+# filter out irrelevant columns
+  select(-location.town,-location.geo.level, -lat, -lon, -journal_totals.entries, -video.youtube_id,-currency_exchange_loss_amount, -description.en, -description.fr, -description.es, -description.vi, -description.ru, -description.ar, -description.pt, -description.id, -paid_hr, -paid_min, -paid_sec, -funded_hr, -funded_min, -funded_sec, -terms.disbursal_hr, -terms.disbursal_min, -terms.disbursal_sec, -terms.loss_liability.currency_exchange, -terms.disbursal_amount, -terms.loan_amount, -posted_hr, -posted_min, -posted_sec, -borrower_pic_count, -payments.local_total, -terms.disbursal_currency,-planned_expiration_hr,-planned_expiration_min,-planned_expiration_sec)
+
+#combine dates
+loans_clean$terms.disbursal_date = as.Date(paste(loans_clean$terms.disbursal_yr, loans_clean$terms.disbursal_mo, loans_clean$terms.disbursal_day), "%Y %m %d")
+loans_clean<-loans_clean%>%
+  select(-terms.disbursal_yr,-terms.disbursal_mo,-terms.disbursal_day)
+loans_clean$funded_date = as.Date(paste(loans_clean$funded_yr, loans_clean$funded_mo, loans_clean$funded_day), "%Y %m %d")
+loans_clean<-loans_clean%>%
+  select(-funded_yr,-funded_mo,-funded_day)
+loans_clean$paid_date = as.Date(paste(loans_clean$paid_yr, loans_clean$paid_mo, loans_clean$paid_day), "%Y %m %d")
+loans_clean<-loans_clean%>%
+  select(-paid_yr,-paid_mo,-paid_day)
+loans_clean$planned_expiration_date = as.Date(paste(loans_clean$planned_expiration_yr, loans_clean$planned_expiration_mo, loans_clean$planned_expiration_day), "%Y %m %d")
+loans_clean<-loans_clean%>%
+  select(-planned_expiration_yr,-planned_expiration_mo,-planned_expiration_day)
+loans_clean$posted_date = as.Date(paste(loans_clean$posted_yr, loans_clean$posted_mo, loans_clean$posted_day), "%Y %m %d")
+loans_clean<-loans_clean%>%
+  select(-posted_yr,-posted_mo,-posted_day)
+# loans_clean<-loans_clean%>%
+#   mutate(region = countrycode(sourcevar = location.country,
+#                             origin = "country.name",
+#                             destination = "region"))
+
+# make additional predictor variables
+# loans_clean<-loans_clean%>%mutate(proportion_males = borrower_m_count/borrower_count)
+# top_5_sectors <- c("Services", "Health", "Food", "Arts", "Clothing")
+# loans_clean<-loans_clean %>% mutate(sector_category = ifelse(sector %in% top_5_sectors, sector, "Other"))
+# top_5_countries <- c("Afghanistan", "Togo", "Haiti", "Kenya", "Ecuador")
+# loans_clean<-loans_clean %>% mutate(country_category = ifelse(location.country %in% top_5_countries, location.country, "Other"))
+```
+
+```{r, eval = FALSE}
+loan_unpaid_id <- loans_clean %>%
+  filter(!(status %in% c("paid","refunded")))
+
+loan_repay_unpaid <- loan_repay %>%
+  filter(loan_id %in% loan_unpaid_id$loan_id)
+
+loan_schedule_unpaid <- loan_schedule %>%
+  filter(loan_id %in% loan_unpaid_id$loan_id)
+```
+
+```{r, eval = FALSE}
+compute_value <- function(loan_plan, loan_payment){
+  net_value <- data.frame(matrix(0,nrow(loan_plan),1))
+  loan_plan <- arrange(loan_plan, loan_id, scheduled_due_date)
+  loan_payment <- arrange(loan_payment, loan_id, settlement_date)
+  last_loan_id <- 0
+  previous_schedule_count <- 0
+  payment_index <- 1
+  for (i in c(1:nrow(loan_plan))){
+    current_loan_id <- as.double(loan_plan[i,1])
+    cutoff_date <- unlist(loan_plan[i,4])
+    if (last_loan_id == current_loan_id){
+      previous_schedule_count <- previous_schedule_count + 1
+    }
+    else{
+      previous_schedule_count <- 0
+    }
+    if (!(previous_schedule_count == 0)){
+      total_owed <- total_owed + loan_plan$scheduled_payments.amount[i]
+    }
+    else{
+      total_owed <- loan_plan$scheduled_payments.amount[i]
+    }
+    while(as.double(loan_payment[payment_index,1]) < current_loan_id){
+      #if(payment_index %% 1000 == 0){
+      #  print(payment_index)
+      #}
+      if(payment_index < nrow(loan_payment)){
+        payment_index <- payment_index + 1
+      }
+      else{
+        break
+      }
+    }
+    total_paid = 0
+    if(as.double(loan_payment[payment_index,1]) == current_loan_id){
+      temp_payment_index <- payment_index
+      while((unlist(loan_payment[temp_payment_index,9]) <= cutoff_date) && 
+            (as.double(loan_payment[temp_payment_index,1]) == current_loan_id)){
+        total_paid <- total_paid + as.double(loan_payment[temp_payment_index,2])
+        if(temp_payment_index < nrow(loan_payment)){
+          temp_payment_index <- temp_payment_index + 1
+        }
+        else{
+          break
+        }
+      }
+    }
+    last_loan_id <- current_loan_id
+    net_value[i,1] <- total_paid - total_owed
+    #if(i %% 1000 == 0){
+    #  print(i)
+    #}
+  }
+  loan_plan <- loan_plan %>%
+    mutate(net_balance = net_value[,1])
+  return(loan_plan)
+}
+```
+
+```{r, eval = FALSE}
+balanced_loan_schedule <- compute_value(loan_schedule,loan_repay)
+write.csv(balanced_loan_schedule,'../balanced_loan_schedule.csv')
+```
+
+```{r, eval = FALSE}
+default_calculator <- function(loan_plan){
+  counts <- loan_plan %>% count(loan_id)
+  default_time <- data.frame(matrix(NA,nrow=nrow(counts),ncol=3))
+  default_time[,1] <- counts[,1]
+  index = 0
+  for (i in c(1:nrow(counts))){
+    strike = 0
+    miss = 0
+    marker = 0
+    if (i > 1){
+      index = index + as.double(counts[i-1,2])
+    }
+    default_time[i,2] = "not default"
+    for (j in c(1:as.double(counts[i,2]))){
+      if (as.double(loan_plan[index + j,6]) < 0){
+        strike = strike + 1
+        if (strike == 4){
+          default_time[i,2] = "default"
+          default_time[i,3] = unlist(loan_plan[index + j,4])
+          break
+        }
+        if (j > 1 && (as.double(loan_plan[index + j - 1,6]) - 
+                      as.double(loan_plan[index + j,6]) == 
+                      as.double(loan_plan[index + j,2]))){
+          miss = miss + 1
+          if (miss == 2){
+            default_time[i,2] = "default"
+            default_time[i,3] = unlist(loan_plan[index + j,4])
+            break
+          }
+        }
+      }
+    }
+  }
+  default_time[,3] <- as.Date(default_time[,3], origin = "1970-01-01")
+  #if(i %% 1000 == 0){
+  #  print(i)
+  #}
+  return(default_time)
+}
+```
+
+```{r, eval = FALSE}
+default_list <- default_calculator(loan_schedule_unpaid)
+```
+
+```{r, eval = FALSE}
+
+monthly_default_calculator <- function(loan_plan,time){
+  counts <- loan_plan %>% count(loan_id)
+  default_time <- data.frame(matrix(NA,nrow=nrow(counts),ncol=3))
+  default_time[,1] <- counts[,1]
+  index = 0
+  for (i in c(1:nrow(counts))){
+    default_time[i,2] = "not default"
+    if (i > 1){
+      index = index + as.double(counts[i-1,2])
+    }
+    if (as.double(counts[i,2]) > (time - 1)){
+       for (j in c(time:as.double(counts[i,2]))){
+         if (j == time){
+            if(as.double(loan_plan[index + j,6]) == -time * 
+                          as.double(loan_plan[index + j,2])) {
+              default_time[i,2] = "default"
+              default_time[i,3] = unlist(loan_plan[index + j,4])
+              break
+            }
+         }
+         else{
+           if (j > 1 && loan_plan[index + j - time,6] <= 0){
+             if(as.double(loan_plan[index + j - time,6]) - 
+                      as.double(loan_plan[index + j,6]) == -time * 
+                      as.double(loan_plan[index + j,2])) {
+                default_time[i,2] = "default"
+                default_time[i,3] = unlist(loan_plan[index + j,4])
+                break
+              }
+           }
+         }
+       }
+    }
+    #if(i %% 1000 == 0){
+    #  print(i)
+    #}
+  }
+  default_time[,3] <- as.Date(default_time[,3], origin = "1970-01-01")
+  return(default_time)
+}
+```
+
+```{r, eval = FALSE}
+default_list_six_months <- monthly_default_calculator(balanced_loan_schedule,6)
+write.csv(default_list_six_months,'../default_list_six_months.csv')
+
+default_list_three_months <- monthly_default_calculator(balanced_loan_schedule,3)
+write.csv(default_list_three_months,'../default_list_three_months.csv')
+
+default_list_twelve_months <- monthly_default_calculator(balanced_loan_schedule,12)
+write.csv(default_list_twelve_months,'../default_list_twelve_months.csv')
+```
+
+```{r, eval = FALSE}
+pay_time_calculator <- function(loan_plan){
+  counts <- loan_plan %>% count(loan_id)
+  pay_time <- data.frame(matrix(NA,nrow=nrow(counts),ncol=3))
+  pay_time[,1] <- counts[,1]
+  index = 0
+  #index = sum(counts[1:50090,2])
+  for (i in c(1:nrow(counts))){
+  #for (i in c(50092:nrow(counts))){
+    pay_time[i,2] = "not paid"
+    if (i > 1){
+      index = index + as.double(counts[i-1,2])
+    }
+    for (j in c(1:as.double(counts[i,2]))){
+      if (!(j == as.double(counts[i,2]))){
+        #print(paste("Loan ID: ",counts[i,1]))
+        #print(as.double(loan_plan[index+j,6]))
+        #print(as.double(loan_plan[index+j+1,2]))
+        #print(as.double(loan_plan[index+as.double(counts[i,2]),2]))
+        if(round(as.double(loan_plan[index+j,6]) - sum(loan_plan[(index+j+1):(index+as.double(counts[i,2])),2])) == 0) {
+          pay_time[i,2] = "paid"
+          pay_time[i,3] = unlist(loan_plan[index + as.double(counts[i,2]),4])
+        }
+      }
+      else{
+        if(round(as.double(loan_plan[index + as.double(counts[i,2]),6])) == 0) {
+          pay_time[i,2] = "paid"
+          pay_time[i,3] = unlist(loan_plan[index + as.double(counts[i,2]),4])
+        }
+      }
+    }
+    #if(i %% 1000 == 0){
+    #  print(i)
+    #}
+  }
+  pay_time[,3] <- as.Date(pay_time[,3], origin = "1970-01-01")
+  return(pay_time)
+}
+```
+
+```{r, eval = FALSE}
+pay_time <- pay_time_calculator(balanced_loan_schedule)
+write.csv(pay_time,'../case1-team01/time_to_payment.csv')
+```
+
+### 1.2 Definition of Default
+
+For the purposes of this analysis, we defined the time of default as the date at which a borrow fails to pay six scheduled payments in a row. This approach to default closely reflects Kiva's definition of default as a loan that has not received repayments in the last six months. However, the execution of this definition proved somewhat difficult since each borrower can submit a payment of any amount of money at any time, irrespective their planned repayment schedule. To align the borrower's payment and lender's planned repayment schedules, we calculated a borrower's "net balance" at each lender-planned scheduled prepayment date. This net balance variable corresponds to difference between the total amount of settled payments and the sum of the loan repayments due at this time. If the net balance metric remains negative and the borrower has not submitted a settled payment across six scheduled repayment dates, then the loan will meet our rigorous criteria for default.
+
+## 2. Data Processing
+
+```{r, warning= F, show_col_types = FALSE, eval = FALSE}
+# DATA PROCESSING for survival model
+default_list_six_months <- read_csv("default_list_six_months.csv", show_col_types = FALSE)
+default_list_six_months<-default_list_six_months%>%
+  mutate(
+  event = case_when(
+    X2 == "default" ~ 1, TRUE ~ 0)
+  )%>%
+  select(X1,X2,X3, event)%>%
+  rename(loan_id=X1)%>%
+  rename(default_status = X2)%>%
+  rename(default_date=X3)
+ dat<-default_list_six_months%>%inner_join(loans_clean, 
+        by=c('loan_id'='loan_id'))%>%
+        # PREDIRCTOR VARIABLES
+      select(loan_id, terms.loss_liability.nonpayment, terms.disbursal_date, default_status, default_date, event, loan_amount, location.country, sector, payments.count, delinquent, borrower_m_count, borrower_count)%>%rename(nonpayment_liability=terms.loss_liability.nonpayment)
+# calculate the censoring time -> we used the latest date of the settelement dates for a loan for this date
+censoring_dates<-loan_repay%>%group_by(loan_id)%>%select(loan_id, settlement_date)%>%
+  slice(which.max(settlement_date))
+# calculate time to default
+dat_censored <- dat %>%filter(is.na(default_date))%>%inner_join(censoring_dates, 
+        # PREDICTORS                                          
+        by=c('loan_id'='loan_id'))%>%select(loan_id, settlement_date)
+dat <- dat %>% full_join(dat_censored, 
+        by=c('loan_id'='loan_id'))%>%
+  mutate(date = coalesce(default_date, settlement_date)) %>%
+  mutate(times = date-terms.disbursal_date) 
+dat <- dat %>% filter(times > 0) 
+```
+
+```{r, eval = FALSE}
+top_3_sectors <- c("Agriculture", "Food", "Retail")
+dat<-dat %>% mutate(sector_category = ifelse(sector %in% top_3_sectors, sector, "Other"))
+#top_5_countries <- c("Bulgaria", "Chad", "Cote D'Ivoire", "Kyrgyzstan", "Iraq")
+#dat<-dat %>% mutate(country_category = ifelse(location.country %in% top_5_countries, location.country, "Other"))
+dat<-dat%>%mutate(proportion_males = borrower_m_count/borrower_count)
+dat$sector_category <- as.factor(dat$sector_category)
+dat$sector_category<-relevel(dat$sector_category, "Other")
+```
+
+```{r, eval = FALSE}
+# Make country predictor by GDP
+GDP<-read_csv('GDP_per_capita.csv', show_col_types=FALSE)
+GDP<-GDP%>%select(-"Country Code", -"Series Name", -"Series Code")
+GDP<-GDP%>%rename("2006"="2006 [YR2006]", "2007"="2007 [YR2007]", "2008"="2008 [YR2008]", "2009"="2009 [YR2009]", "2010"="2010 [YR2010]", "2011"="2011 [YR2011]", "2012"="2012 [YR2012]")
+GDP<-GDP%>%pivot_longer(
+  cols =c('2006', '2007', '2008', '2009', '2010', '2011', '2012'),
+  names_to = "year",
+  values_to = "GDP"
+)
+dat<-dat%>%left_join(GDP, by=c('location.country'='Country Name'))%>%
+  filter(year(date)==year)
+dat$GDP<-as.numeric(dat$GDP)
+```
+
+```{r, eval = FALSE}
+# SAVE RESULTS
+write.csv(dat,'../Case Study 1/dat.csv')
+```
+
+From the four original datasets, we chose to only utilize the loans, loan repayments, loan schedule datasets for analysis, as we reasoned that our clients may not be interested in how their own characteristics inform borrower's likelihood of loan default. In data processing of the loans dataset, we removed the observations with `refunded` status, because these are loans that have been directly refunded and thus never paid back, which does not contribute to investigation of the default status. For all the time and date information, we combined the year, month and day columns into a single date for further analysis and removed the hour, minute and second columns. Then we filtered out extraneous information irrelevant to our analysis, such as the latitude and longitude of the country, the total number of journal entries, Youtube video id, currency exchange loss amount, and the columns showing the language of the comment.
+
+## 3. Exploratory data analysis
+
+```{r, eval = FALSE, warnings = FALSE}
+# DEFAULT BY REGION BAR PLOT
+# dat<- read_csv('dat.csv', show_col_types=FALSE)
+# defaulted_percentage<-dat%>%
+#   group_by(GDP)%>%
+#   summarize(percentage = mean(default_status=="default"))
+# defaulted_percentage <- defaulted_percentage[order(defaulted_percentage$percentage, decreasing = TRUE),]
+# top15defaulted_count <- head(defaulted_percentage, 15)
+# top15defaulted_count <- top15defaulted_count %>%
+#     mutate(region = fct_reorder(region, percentage, .fun = sum, .desc = TRUE))
+# cp <- ggplot(top15defaulted_count, aes(x = region, y = percentage)) + 
+#     geom_bar(stat = "identity", fill="orange") +
+#     coord_flip()+ 
+#   ggtitle("Region")+ labs(y="% defaulted", x = "")
+
+```
+
+```{r}
+## % DEFAULT EDA PLOTS
+# DEFAULT BY GDP SCATTER PLOT
+dat<- read_csv('dat.csv', show_col_types=FALSE)
+defaulted_percentage<-dat%>%
+  group_by(GDP)%>%
+  summarize(percentage = mean(default_status=="default"))
+defaulted_percentage <- defaulted_percentage[order(defaulted_percentage$percentage, decreasing = TRUE),]
+cp <- ggplot(defaulted_percentage, aes(x = percentage, y = GDP)) + 
+  geom_point() + ggtitle("GDP")+ labs(y="", x = "")
+
+# DEFAULT BY PAYMENT COUNT
+defaulted_payment_count<-dat%>%
+  group_by(payments.count)%>%
+  summarize(percentage = mean(default_status=="default"))
+pc <- ggplot(defaulted_payment_count, aes(x = payments.count, y = percentage)) + 
+    geom_point() + coord_flip() + ggtitle("# of Payments")+ labs(y="", x = "")
+
+#DEFAULT BY PARTY RESPONSIBLE BAR PLOT
+defaulted_percentage<-dat%>%
+  group_by(nonpayment_liability)%>%
+  summarize(percentage = mean(default_status=="default"))
+defaulted_percentage <- defaulted_percentage %>%
+    mutate(default_status = fct_reorder(nonpayment_liability, percentage, .fun = sum, .desc = TRUE))
+np <- ggplot(defaulted_percentage, aes(x = default_status, y = percentage)) +
+    geom_bar(stat = "identity", fill="red") +
+    coord_flip() +
+  ggtitle("Party Responsible")+ labs(y="% defaulted", x = "")
+
+# HISTOGRAM: defaulted loans by sector
+defaulted_percentage<-dat%>%
+  group_by(sector_category)%>%
+  summarize(percentage = mean(default_status=="default"))
+defaulted_percentage <- defaulted_percentage[order(defaulted_percentage$percentage, decreasing = TRUE),]
+# top8defaulted_count <- head(defaulted_percentage, 8)
+defaulted_percentage <- defaulted_percentage %>% 
+    mutate(sector_category = fct_reorder(sector_category, percentage, .fun = sum, .desc = TRUE))
+sp <- ggplot(defaulted_percentage, aes(x = sector_category, y = percentage)) + 
+    geom_bar(stat = "identity", fill="lightblue") +
+    coord_flip() +
+  ggtitle("Sector") + labs(y="% defaulted", x = "")
+
+#Proportion male scatter plot
+defaulted_prop_male<-dat%>%
+  group_by(proportion_males)%>%
+  summarize(percentage = mean(default_status=="default"))
+
+pd <- ggplot(defaulted_prop_male, aes(x = proportion_males, y = percentage)) + 
+    geom_point() + coord_flip() + ggtitle("Proportion Male")+ labs(y="% defaulted", x = "")
+
+#loan amount scatter plot
+defaulted_loan_amount<-dat%>%
+  group_by(loan_amount)%>%
+  summarize(percentage = mean(default_status=="default"))
+
+ld <- ggplot(defaulted_loan_amount, aes(x = loan_amount, y = percentage)) + 
+    geom_point() + coord_flip() + ggtitle("Loan Amount")+ labs(y="% defaulted", x = "")
+
+```
+
+```{r, echo=F, warning=F, fig.height = 4, fig.width = 6}
+#, fig.cap = "Top 5 Countries/Sectors by Default 
+par(mfrow = c(2,3))
+(cp + pc) / (np + sp) / (ld + pd)
+```
+
+```{r, fig.height = 4, fig.width = 6}
+# DEFAULT BY SECTOR OVER TIME VIOLIN PLOT
+sectorTime <- ggplot(dat, aes(x=sector_category, y=times)) + geom_violin() + coord_flip() + 
+  ggtitle("Sector") + 
+  labs(y="", x = "")
+
+# DEFAULT BY PARTY RESPONSIBLE OVER TIME VIOLIN PLOT
+PartyResponsibleTime <- ggplot(dat, aes(x=nonpayment_liability, y=times)) + geom_violin() + coord_flip() + 
+  ggtitle("Party Responsible") + 
+  labs(y="", x = "")
+
+# DEFAULT BY GDP OVER TIME SCATTER PLOT
+PaymentCountTime <- ggplot(dat, aes(x=GDP, y=times)) + geom_point() + coord_flip() + 
+  ggtitle("GDP") + 
+  labs(y="Days to Default" , x = "")
+
+# DEFAULT BY GDP OVER TIME SCATTER PLOT
+GDPTime <- ggplot(dat, aes(x=payments.count, y=times)) + geom_point() + coord_flip() + 
+  ggtitle("# of Payments") + 
+  labs(y="Days to Default" , x = "")
+
+# DEFAULT BY PROP MALE OVER TIME SCATTER PLOT
+PropMaleTime <- ggplot(dat, aes(x=proportion_males, y=times)) + geom_point() + coord_flip() + 
+  ggtitle("Proportion of Male Borrowers") + 
+  labs(y="Days to Default" , x = "")
+
+# DEFAULT BY LOAN AMOUNT OVER TIME SCATTER PLOT
+LoanAmountTime <- ggplot(dat, aes(x=loan_amount, y=times)) + geom_point() + coord_flip() + 
+  ggtitle("Loan Amount") + 
+  labs(y="Days to Default" , x = "")
+
+(sectorTime + PartyResponsibleTime) / (PaymentCountTime + GDPTime) / (PropMaleTime + LoanAmountTime)
+```
+
+To investigate the effects of macroeconomic factors on loan default, we obtained the countries GDP per capita in the respective years of the loans from the World Bank (2011) API, which reflects the purchasing power of lenders. Furthermore, we clustered the sectors into four larger categories (Agriculture, Food, Retail and Other) because the former three take up the majority (67%) of the loans. Other variables of interest include the total amount of the loan, GDP per capita of the country where the lender is from, whether partner or lender is liable in case of nonpayment and the number of payments, and the proportion of male lenders in the group. To interpret the effects of interaction terms in the model, we mean centered all the quantitative variables (amount of the loan, GDP, proportion of male lenders and number of payments).
+
+The upper portion of the EDA plots features the correlation of predictors with the default rate, whereas the lower portion features the time to default. We see that loans for which the partner is responsible in case of nonpayment, or loans from the agriculture sector has a significantly higher default rate. Similarly, the violin plots reveal that the liability and sector factors have significant effects on the distribution of time to default. By the same token, we decided to include the predictors from the EDA above in the models.
+
+## 4. Modeling
+
+To address the the two case study goals separately, we fitted a **survival model** to quantify relationships between sociodemographic/geographic factors and time to default, and a **logistic regression** model to quantify relationships between sociodemographic/geographic factors and risk of default. For each model, we ran the backward selection algorithm to gauge insights into the importance of the predictors, compared the AIC values as well as observed the confidence intervals of the coefficients.
+
+## 4.1 Survival Analysis (Time to Default)
+
+```{r, echo=F, warning=F, fig.align='center', out.height  = '30%', out.width = '30%'}
+# VISUALIZATION
+# plot(survfit(Surv(times, event) ~ 1, data = dat),
+#       xlab = "Days", ylab = "Est. Survival Probability",
+#      conf.int = F)
+ggsurvplot(survfit(Surv(times, event) ~ 1, data = dat), 
+     xlab = "Days", ylab = "Est. Survival Probability", 
+     conf.int = F) +ggtitle("Kaplan-Meier survival curve") 
+```
+
+We decided to fit an accelerated failure time (AFT) model to quantify the relationship between the predictor variables and the time to default. Under an AFT model, the predictor variables we fit will either accelerate or decelerate the time to default. For predictors, we decided to include loan amount, GDP per capita, sector, liability status for nonpayment (lender or partner), and number of scheduled repayments. These covariates were included because we saw from our EDA that they could help explain the variance in default probability. We chose to include an interaction term between loan amount and GDP per capita because we believe people from less wealthier countries might default on larger loans at a faster rate. After fitting the models for the three versions of AFT model (exponential, Weibull and Log-normal), we compared their AIC outputs.
+
++----------------+----------------+----------------+----------------+
+|                | Exponential    | Weibull        | Log-normal     |
++================+================+================+================+
+| AIC            |     63078.55   |     67394.25   |     57853.49   |
++----------------+----------------+----------------+----------------+
+
+```{=tex}
+\begin{align} log(T_i) & = 9.35238 + 0.00018 * loan\_amount -0.00006 * GDP -0.71521 * sector\_categoryAgriculture \\& +0.02725 * sector\_categoryFood + 0.46303 * sector\_categoryRetail \\ & -0.88595 * nonpayment\_liabilitypartner + 0.12302 * payments.count +1.12e^{-08} * loan\_amount *GDP \end{align}
+```
+```{r, echo=F, warning=F, fig.height = 3, fig.width = 3}
+# Exponential AFT Model
+# dat$region <- as.factor(dat$region)
+# dat$region<-relevel(dat$region, "North America")
+
+dat$sector_category <- as.factor(dat$sector_category)
+dat$sector_category<-relevel(dat$sector_category, "Other")
+dat$loan_amount <- as.numeric(scale(dat$loan_amount, center = TRUE, scale = FALSE))
+dat$GDP <- as.numeric(scale(dat$GDP, scale = FALSE))
+dat$payments.count <- as.numeric(scale(dat$payments.count, scale = FALSE))
+dat$SurvObj <- with(dat, Surv(as.numeric(times), event)) 
+
+aft_e <- survreg(SurvObj~loan_amount+GDP+sector_category+nonpayment_liability+payments.count+loan_amount*GDP, data=dat, dist="exponential")
+
+#summary(aft_e)
+```
+
+```{r}
+# Weibull AFT Model
+aft_w <- survreg(SurvObj~loan_amount+GDP+sector_category+nonpayment_liability+payments.count+loan_amount*GDP, data=dat, dist="weibull", control=list(maxit=50))
+# summary(aft_w)
+```
+
+```{r}
+# Log-Normal AFT Model
+aft_ln <- survreg(SurvObj~loan_amount+GDP+nonpayment_liability+sector_category+payments.count+loan_amount*GDP, data=dat, dist="lognormal")
+
+# summary(aft_ln)
+# confint(aft_ln, level = 0.95)
+tidy(aft_ln, conf.int = TRUE, exponentiate = FALSE) %>%
+    kable(format = "markdown", digits = 5)
+```
+
+```{r, eval = FALSE}
+rbind(extractAIC(aft_e), extractAIC(aft_w), extractAIC(aft_ln))
+```
+
+Based on the AIC values for the three versions of the ATF model, we decided on the log-normal model with the lowest as the final survival model. All of the parameters and interaction effects in the model have a p-value less than 0.05 and the confidence interval does not include 0, except for the food sector category. All the loans with positive coefficients are expected to survive longer, while those with negative covariates are not expected to survive as long. In this case, survival is defined as not defaulting. For example, holding all else constant, if the loan is for agricultural purposes, it is expected to survive approximately exp(-0.71) or 0.49 times the length of a loan that is not, and the 95% confidence interval spans from a multiplies of 0.45 to 0.53. Additionally, holding all else constant, for every additional payment that has been made, the loan is expected to survive exp(0.12) or 1.13 times longer than the mean length (with a 95% confidence interval of 1.12 to 1.14).
+
+Our model shows that if the partner rather than the investor is responsible for the loan payment, the loan is expected to survive for a shorter amount of time. This could be because if the community partner is responsible, the borrower is more incentivized to pay back the loan. Our model also shows that if a loan is for the agriculture sector, the expected time to default is shorter; while for the retail and food sectors, the expected time to default is longer. This is reasonable since agriculture is a particularly risky field to invest in due to its dependence on external forces (such as weather and pest populations). Next, we can see in our model that with every additional payment that has been made, the loan is expected to survive longer, which is reasonable because the more payments made, the longer the loan has not defaulted.
+
+We thought that it would be reasonable to assume an interaction term between loan amount and GDP because borrowers from countries with lower GDP may default faster if the loan amount is high. Holding all else constant, exp(3.14e-09) is the difference in expected survival times corresponding to an increase in loan amount of 1 dollar for two GDP homogeneous groups which differ by 1 dollar. As for the main predictors, we can say that the expected survival time increases by 1.0001 times corresponding to an increase in loan amount by 1 dollar among countries who have the mean GDP. We can also say that the expected survival time decreases by 0.99 times corresponding to an increase in GDP by 1 dollar among borrowers with the mean loan amount.
+
+#### 4.1.1 Sensitivity analysis on distribution
+
+To evaluate the performance of our log-normal AFT model, we performed sensitivity analysis on the choice of distribution. The exponential AFT model output on the data below reveals that all of the predictors in the exponential model have the same direction in coefficients, except for the food sector predictor, which reveals that our AFT model is stable and rarely depends on the choice of the distribution. All of the predictors in our exponential AFT model are still significant in the log-normal model, which reveals that our AFT model is robust to the specifications of the choice of underlying distribution.
+
+```{r}
+tidy(aft_e, conf.int = TRUE, exponentiate = FALSE) %>%
+    kable(format = "markdown", digits = 5)
+```
+
+```{r, eval=F}
+# Perform backward selection
+step_aft_e <- step(aft_ln, direction = "backward", scope = list(lower = ~ 1, upper = ~loan_amount+proportion_males+GDP+nonpayment_liability+sector_category+payments.count+loan_amount*GDP))
+```
+
+## 4.2 Logistic Regression (Risk of Default)
+
+Differing from our AFT model, we decided to include the proportion of males in the lender group as another predictor, in light of economics literature that indicates higher default rates associated with male lenders such as found by researchers at Barcelona Graduate School of Economics (Moltalvo & Reynal-Querol, 2020).
+
+```{r, echo=F}
+# NORMAL LOGISTIC REGRESSION (handpicked)
+dat_logistic<- dat %>%
+  mutate(default_binary = case_when(
+    default_status == "default" ~ 1, TRUE ~ 0))
+mylogit <- glm(default_binary~proportion_males+loan_amount+GDP+sector_category+nonpayment_liability+payments.count, data = dat_logistic, family = "binomial", control=list(maxit=50))
+
+#tidy(mylogit) %>% 
+#   kable(digits = 6)
+# backward selection
+full_model<-mylogit
+# summary(mylogit)
+# confint(mylogit)
+# tidy(mylogit, conf.int = TRUE, exponentiate = FALSE) %>%
+#     kable(format = "markdown", digits = 3)
+```
+
+All of the predictors are statistically significant and the confidence intervals do not include zero, except for the sector category of food. Here, a negative coefficient indicates that the predictor decreases the odds of the loan defaulting, while a positive coefficient indicates the opposite. For example, the loan amount coefficient can be interpreted as holding all else constant, for every increase in dollar amount of the loan, the odds of a default decreases by exp (-0.00028) or 0.99 times among borrowers from countries with an average GDP and average number of payments. This could be because borrowers who take on higher loans are more confident that they are capable of paying it back. Additionally, we can conclude from the model that holding all else constant, with every additional increase in the percentage of male borrowers, the odds of a default increases by exp(0.45) or 1.56 times. This could be because male borrowers are less trustworthy than female borrowers.
+
+We can see that with every dollar increase in GDP of a country that the loan is based in, the odds of defaulting increases by 1.0006 times among people who have the average loan amount. This could be because there is a higher chance of risky loans in richer countries. Additionally, for loans based in either the agriculture or food sector, the odds of defaulting increases, while the opposite is true for loans based in retail. This could be because the former two are riskier fields to make investments in than the latter due to its uncertainty. Lastly, for every additional payment that the borrower has made, the odds of defaulting decreases for borrowers who have the average loan amount.
+
+```{=tex}
+\begin{align} log(\frac{P}{1-P}) & = -4.02712 -0.00028 * loan\_amount +0.45698 * proportion\_males -0.00006 * GDP \\& +0.95310 * sector\_categoryAgriculture  +0.00751 * sector\_categoryFood \\& - 0.47920 * sector\_categoryRetail +1.03806 * nonpayment\_liabilitypartner \\& - 0.07067 * payments.count -1.105e^{-08} * loan\_amount \cdot GDP \\& -0.00003 * loan\_amount \cdot payments.count \end{align}
+```
+We then elected to evaluate two interaction terms between loan amount and GDP per capita and between loan amount and the number of payments. People from less wealthy nations may have higher default rates for larger loans while people who budget shorter schedules for larger loans may be more likely to default. The first interaction between loan amount and GDP is the difference between the log-odds ratios corresponding to an increase in loan amount of 1 dollar for two GDP homogeneous groups which differ by 1 dollar. It can also be interpreted as the difference between the log-odds ratios corresponding to an increase in GDP of 1 dollar for two loan amount homogeneous groups which differ by 1 dollar. The second interaction between loan amount and number of payments can be interpreted similarly as the difference between the log-odds ratios corresponding to an increase in loan amount of 1 dollar for two number-of-payments homogeneous groups which differ by one payment.
+
+We then ran a F-test to assess the inclusion of interactions terms and decided to include both in the full model. After adding the interaction terms, we performed backward selection and yielded the same full model, therefore all the predictors are significant.
+
+```{r, echo=F, fig.cap="Interaction F test output"}
+# F-test
+mylogit_interaction_1 <- glm(default_binary~loan_amount+proportion_males+GDP+sector_category+nonpayment_liability+payments.count+loan_amount*GDP, data = dat_logistic, family = "binomial", control=list(maxit=50))
+mylogit_interaction_2 <- glm(default_binary~loan_amount+proportion_males+GDP+sector_category+nonpayment_liability+payments.count+loan_amount*GDP+loan_amount*payments.count, data = dat_logistic, family = "binomial", control=list(maxit=50))
+tidy(mylogit_interaction_2, conf.int = TRUE, exponentiate = FALSE) %>%
+    kable(format = "markdown", digits = 5)
+anova(mylogit, mylogit_interaction_1, mylogit_interaction_2, test='F') %>%
+  kable()
+```
+
+```{r, eval=F}
+step_model <- step(full_model, direction = "backward", scope = list(lower = ~ 1, upper = ~ loan_amount+proportion_males+region+sector_category+nonpayment_liability+payments.count+loan_amount*GDP+loan_amount*payments.count))
+```
+
+```{r, message = FALSE, warning = FALSE, echo = F}
+mylogit_aug <- augment(mylogit, type.predict = "response", 
+                      type.residuals = "pearson")
+```
+
+```{r, echo=F, warning=F}
+set.seed(123)
+ probs <- predict(mylogit_interaction_2, type = "response")
+# calculate ROC performance metrics
+roc_obj <- prediction(probs, dat_logistic$default_binary)
+perf <- performance(roc_obj, "tpr", "fpr")
+
+# create data frame for ggplot
+df <- data.frame(fpr=perf@x.values[[1]], tpr=perf@y.values[[1]])
+df <- rbind(c(0,0), df, c(1,1))
+
+# ggplot for ROC
+roc_plot <- ggplot(df, aes(x=fpr, y=tpr)) +
+  geom_path(color="red") +
+  geom_abline(slope=1, intercept=0, linetype="dashed") +
+  xlab("False Positive Rate") +
+  ylab("True Positive Rate") +
+  ggtitle("ROC Curve")
+```
+
+The model yields an AUC (Area Under the Curve) on the ROC plot of 0.7238, which indicates that there is a 72.38% probability that the classifier will rank a randomly chosen default example higher than a randomly chosen non-default example, indicating a moderate to good performance in binary classification.
+
+#### 4.2.1 Interaction Term Interpretation
+
+```{r, echo=F, warning=F, fig.height = 2.5, fig.width = 7, fig.align='center'}
+df <- data.frame()
+default_test_low = dat%>%select(loan_amount, GDP, proportion_males,sector_category,nonpayment_liability,delinquent)
+duprow=default_test_low[1,]
+for(i in 1:101)
+{
+    df = rbind(df,duprow)
+}
+payments.count = seq(0,100,length.out=101)
+df$loan_amount=25
+df <- cbind(df,payments.count)
+df<- df%>%mutate(logit = predict(mylogit_interaction_2, df, type="response"))
+df$loan_amount_level = "low"
+## MEDIUM VALUE OF compactness_mean
+df2 <- data.frame()
+default_test_medium = dat%>%select(loan_amount, GDP, proportion_males,sector_category,nonpayment_liability,delinquent)
+duprow=default_test_medium[1,]
+for(i in 1:101)
+{
+    df2 = rbind(df2,duprow)
+}
+payments.count = seq(0,100,length.out=101)
+df2$loan_amount=400
+df2 <- cbind(df2,payments.count)
+df2<- df2%>%mutate(logit = predict(mylogit_interaction_2, df2, type="response"))
+df2$loan_amount_level = "medium"
+df_combined<-rbind(df,df2)
+## HIGH VALUE OF compactness_mean
+df3 <- data.frame()
+default_test_high = dat%>%select(loan_amount, GDP, proportion_males,sector_category,nonpayment_liability,delinquent)
+duprow=default_test_high[1,]
+for(i in 1:101)
+{
+    df3 = rbind(df3,duprow)
+}
+payments.count = seq(0,100,length.out=101)
+df3$loan_amount=1000
+df3 <- cbind(df3,payments.count)
+df3<- df3%>%mutate(logit = predict(mylogit_interaction_2, df3, type="response"))
+df3$loan_amount_level = "high"
+df_combined<-rbind(df_combined,df3)
+## FUNCTION TO GET THE Probability
+get_probability<-function(log_odds){
+  odds=exp(log_odds)
+  odds/(1+odds)
+}
+## get probability
+df_combined<-df_combined%>%
+  rowwise()%>%
+  mutate(probability = get_probability(logit))
+plot2<-ggplot(df_combined, aes(x=payments.count, y=probability, color=loan_amount_level, shape=loan_amount_level)) +labs(title = "Interaction: amount and # of payments", x = "Number of payments")+
+   geom_point()  
+  # + geom_smooth(method = "glm", 
+  #   method.args = list(family = "binomial"), 
+  #   se = FALSE) 
+roc_plot+plot2
+```
+
+We found a significant interaction term between the number of payments and the loan amount, with the term having small p values, and confidence interval significantly different from 0 in both the survival and logistic models. We visualized the effect of number of payments on the probability of defaulting under different levels of `loan_amount` values. Under high value of loan amount (1000 dollars), the probability of default decreases more drastically with the number of payments. Whereas, under low value of loan amount (25 dollars), the number of payments has a smaller effect on this probability. Under medium value of loan amount (400 dollars), the number of payments has a moderate effect on decrease in the probability of default as number of payments increases.
+
+#### 4.2.2 K-Fold Stratefied Cross Validation
+
+```{r, echo=F, warning=F, include = FALSE}
+library(caret)
+# library(stats)
+set.seed(123)
+
+# create folds
+folds <- createFolds(dat_logistic$default_binary, k = 5, list = TRUE, returnTrain = TRUE)
+
+# list to store results
+results <- rep(0, 5)
+
+# loop over folds
+for (i in 1:5) {
+  train_idx <- folds[[i]]
+  test_idx <- !train_idx
+  train_data <- dat_logistic[train_idx, ]
+  test_data <- dat_logistic[-train_idx, ]
+  
+  model <-  glm(default_binary ~ proportion_males+loan_amount+GDP+sector_category+nonpayment_liability+payments.count+loan_amount*payments.count, data = dat_logistic, family = "binomial", control=list(maxit=50))
+  pred <- predict(model, newdata = test_data, type = "response")
+  pred_class <- ifelse(pred > 0.5, 1, 0)
+  results[i] <- mean(pred_class == test_data$default_binary)
+}
+
+# view results
+results
+mean(results)
+sd(results)
+```
+
+To apply cross validation to the data set with imbalanced class distribution, we performed 5-fold stratified cross validation. We obtained a mean accuracy of 96.14% which demonstrates that the overall estimated accuracy of the model is very high. We obtained a standard deviation of accuracy of 2.941729e-05, which demonstrates that the variability of the accuracy across all folds is low, thus indicates that the accuracy estimate is more stable.
+
++----------+-----------+---------------+---------------+---------------+---------------+
+|          | Fold 1    | Fold 2        | Fold 3        | Fold 4        | Fold 5        |
++==========+===========+===============+===============+===============+===============+
+| Accuracy | 0.9614086 |     0.9613549 |     0.9613549 |     0.9614086 |     0.9614086 |
++----------+-----------+---------------+---------------+---------------+---------------+
+
+## 4.3 Model Assumptions
+
+### 4.3.1 Survival Analysis Assumptions
+
+Firstly, it is reasonable to assume that the survival probabilities are the same for all the samples who joined late in the study and those who have joined early since the probability to default is not dependent on when the loan is recorded in the study. Second, the assumption that the occurrence of event is done at a specified time is met because using our definition of default, the event occurs on a specific day. Thirdly, the assumption that censoring is independent or unrelated to the likelihood of developing the event of interest because our definition of default is only dependent on if borrower misses payments.
+
+### 4.3.2 Logistic Regression
+
+**Randomness**: It is reasonable to assume the observations in the dataset are randomly selected and are representative of the population of interest.
+
+**Independence**: It is reasonable to assume that the observations are independent of one another.
+
+**Linearity**: We can see that all of the residuals for the predictor variables used in the logistic regression do not have a pattern in their binned residual distributions. The residual distribution for the proportion of male borrowers appear a bit abnormal, but the outlines at 0 and at 1 makes sense because there are a significant number of loans that are only male or only female borrowers. We can see for the categorical variables, all the residuals are very close to zero; therefore, the linearity assumption is satisfied.
+
+```{r, echo=F, warning=F, fig.height = 2, fig.width = 5}
+#, 
+par(mfrow = c(1,4), pty="s")
+
+arm::binnedplot(x = mylogit_aug$.fitted, y = mylogit_aug$.resid,
+
+                xlab = "Predicted Probabilities",
+
+                main = "Predicted Values",
+
+                col.int = FALSE)
+
+arm::binnedplot(x = mylogit_aug$loan_amount,
+
+                y = mylogit_aug$.resid,
+
+                col.int = FALSE,
+
+                xlab = "Loan_amount",
+
+                main = "Loan Amount")
+
+arm::binnedplot(x = mylogit_aug$proportion_males,
+
+                y = mylogit_aug$.resid,
+
+                col.int = FALSE,
+
+                xlab = "Proportion of borrowers who are male",
+
+                main = "Male Proportion")
+
+arm::binnedplot(x = mylogit_aug$payments.count,
+
+                y = mylogit_aug$.resid,
+
+                col.int = FALSE,
+
+                xlab = "Number of Payments",
+
+                main = "Payment Counts")
+```
+
+## 5. Sensitivity Analysis
+
+Due to the rigorousness and flexibility of our calculation of time to default, we were able to perform sensitivity analysis by varying our definition of default.
+
+```{r, warning= FALSE, show_col_types = FALSE, eval=FALSE}
+# DATA PROCESSING for survival model
+default_list_three_months <- read_csv("default_list_three_months.csv", show_col_types = FALSE)
+default_list_three_months <- default_list_three_months%>%
+  mutate(
+  event = case_when(
+    X2 == "default" ~ 1, TRUE ~ 0)
+  )%>%
+  select(X1,X2,X3, event)%>%
+  rename(loan_id=X1)%>%
+  rename(default_status = X2)%>%
+  rename(default_date=X3)
+ dat_three_months <- default_list_three_months%>%inner_join(loans_clean, 
+        by=c('loan_id'='loan_id'))%>%
+        # PREDIRCTOR VARIABLES
+      select(loan_id, terms.loss_liability.nonpayment, terms.disbursal_date, default_status, default_date, event, loan_amount, location.country, sector, payments.count, delinquent, borrower_m_count, borrower_count)%>%rename(nonpayment_liability=terms.loss_liability.nonpayment)
+# calculate the censoring time -> we used the latest date of the settlement dates for a loan for this date
+censoring_dates <- loan_repay%>%group_by(loan_id)%>%select(loan_id, settlement_date)%>%
+  slice(which.max(settlement_date))
+# calculate time to default
+dat_three_months_censored <- dat_three_months %>%filter(is.na(default_date))%>%inner_join(censoring_dates, 
+        # PREDICTORS                                          
+        by=c('loan_id'='loan_id'))%>%select(loan_id, settlement_date)
+dat_three_months <- dat_three_months %>% full_join(dat_three_months_censored, 
+        by=c('loan_id'='loan_id'))%>%
+  mutate(date = coalesce(default_date, settlement_date)) %>%
+  mutate(times = date-terms.disbursal_date) 
+dat_three_months <- dat_three_months %>% filter(times > 0) 
+
+top_3_sectors <- c("Agriculture", "Food", "Retail")
+dat_three_months <- dat_three_months %>% mutate(sector_category = ifelse(sector %in% top_3_sectors, sector, "Other"))
+#top_5_countries <- c("Bulgaria", "Chad", "Cote D'Ivoire", "Kyrgyzstan", "Iraq")
+#dat_three_months<-dat_three_months %>% mutate(country_category = ifelse(location.country %in% top_5_countries, location.country, "Other"))
+dat_three_months <- dat_three_months%>%mutate(proportion_males = borrower_m_count/borrower_count)
+# releveling the categories
+# dat_three_months$region <- as.factor(dat_three_months$region)
+# dat_three_months$region<-relevel(dat_three_months$region, "North America")
+dat_three_months$sector_category <- as.factor(dat_three_months$sector_category)
+dat_three_months$sector_category <- relevel(dat_three_months$sector_category, "Other")
+
+# Make country predictor by GDP
+GDP <- read_csv('GDP_per_capita.csv', show_col_types=FALSE)
+GDP <- GDP%>%select(-"Country Code", -"Series Name", -"Series Code")
+GDP <- GDP%>%rename("2006"="2006 [YR2006]", "2007"="2007 [YR2007]", "2008"="2008 [YR2008]", "2009"="2009 [YR2009]", "2010"="2010 [YR2010]", "2011"="2011 [YR2011]", "2012"="2012 [YR2012]")
+GDP <- GDP%>%pivot_longer(
+  cols =c('2006', '2007', '2008', '2009', '2010', '2011', '2012'),
+  names_to = "year",
+  values_to = "GDP"
+)
+dat_three_months <- dat_three_months%>%left_join(GDP, by=c('location.country'='Country Name'))%>%
+  filter(year(date)==year)
+dat_three_months$GDP <- as.numeric(dat_three_months$GDP)
+
+# SAVE RESULTS
+write.csv(dat_three_months,'../Case Study 1/dat_three_months.csv')
+```
+
+```{r}
+library(survminer)
+dat_three_months<- read_csv('dat_three_months.csv', show_col_types=FALSE)
+dat_three_months$sector_category <- as.factor(dat_three_months$sector_category)
+ dat_three_months$sector_category<-relevel(dat_three_months$sector_category, "Other")
+dat_three_months$SurvObj <- with(dat_three_months, Surv(as.numeric(times), event)) 
+aft_e_three_months <- survreg(SurvObj~loan_amount+GDP+sector_category+nonpayment_liability+payments.count+loan_amount*GDP, data=dat_three_months, dist="exponential")
+# summary(aft_e_three_months)
+# confint(aft_ln_three_months, level = 0.95)
+tidy(aft_e_three_months, conf.int = TRUE, exponentiate = FALSE) %>%
+    kable(format = "markdown", digits = 5)
+```
+
+Based on the model output derived from the alternative definition of default as a loan that has not received repayments in the last three months instead of six months, we refitted the model. We observe that the directional impact of all statistical significant main effect and interaction terms remains the same for both definitions of default. For instance, both definitions of default suggest that lending for agricultural purposes accelerates the time to default. Therefore, our model is robust to specifications of the definition of default.
+
+## 6. Implications & Model Interpretation
+
+The directions of all the main effect terms correspond with one of another in both models. If the coefficient is positive in the AFT model, it is negative in the logistic, which means that for that given predictor, we can conclude the loan is expected to survive longer before defaulting from the AFT model and has a lower chance of default from the logistic model. The predictors associated with a longer time to default and a lower risk of default involve borrowers from the retail sector, larger loans, country of origin with greater GDP per capita and loans with a greater number of payments. Both results meet our expectations, as borrowers from the retail sector may have greater financial stability given their diverse product offerings. Likewise, larger loans may provide borrowers more capital to generate revenue for repayments while loans divided into a greater number of scheduled payments may prove more manageable for borrowers. The predictors associated with a shorter time to default and greater risk of default are smaller loan amounts, borrowers in the agriculture sector, liability held by partner rather than an investor, and country of origin with lower GDP per capita. Increases in the interaction term between loan amount and GDP per capita are further associated with a shorter time to default and a higher risk of default. In more model-specific results, a greater proportion of male borrowers is associated with greater risk of default in the logistic regression model. However, increases in the interaction term between loan amount and the number of payments are associated with a lower risk of default in the same model.
+
+## 7. Limitations & Future Work
+
+Our statistical analysis protocol yields a number of important benefits. Firstly, our two-pronged approach involving both survival analysis and logistic regression allows us to separately identify predictors of time to default and risk of default, respectively, all while preserving interpretability. Secondly, our analysis plan benefits from an independent definition of default that draws heavily from the official Kiva model. Post-hoc sensitivity analyses have further indicated that our definition of default is relatively robust and yields the same results regardless of cutoff window. A final strength stems from our holistic approach to model selection, wherein AIC comparisons and backward selection have enabled us to select the most effective model.
+
+One limitation is that our code did not include losses from currency exchange, which could complicate a small number of loan repayment calculations. Another minor setback stems from our code's computation time. Since we had to compute balances for each scheduled payment dates, irrespective of the amount, frequency, or timing of the borrower's repayments, the temporal comparisons across the schedule and repayment files added some added inefficiencies. However, the storage of computationally difficult results in separate csv files has reduced our run time to 4:35. A final limitation stems from our reliance on settled payments in our definition of default which depends on the processing time across countries.
+
+<!-- The following table details how processing time (time from initial payment to settled status) various wildly across countries and the countries with the longest processing times had the highest default rates, as expected. Lenders may seek to address this issue to improve the reliability of loan repayments from countries such as Bulgaria and Côte d’Ivoire. -->
+
+<!-- ```{r, warning = F, echo=F, message=F} -->
+
+<!-- settlement_times <- loan_repay %>% -->
+
+<!--   left_join(loans_clean, by = c('loan_id')) %>% -->
+
+<!--   select(loan_id,processed_date,settlement_date,region) %>% -->
+
+<!--   mutate(delay = settlement_date - processed_date) -->
+
+<!-- settlement_times %>% -->
+
+<!--   filter(!is.na(region)) %>% -->
+
+<!--   group_by(region) %>% -->
+
+<!--   summarize(time = mean(delay)) %>% -->
+
+<!--   arrange(-time) %>% -->
+
+<!--   top_n(5)%>%kable() -->
+
+<!-- ``` -->
+
+Future analyses may want to consider lender behavior and see if certain patterns may influence a borrower's default rates. Another room for improvement stems from the reality that most borrowers finish paying off their loans early and thus naturally eliminate their risk for default. We have already computed time to payment in an attempt to account for this possibility, but survival analysis models that allow for the possibility of early payment, such as mixture cure models, proved too difficult to implement given their lack of documentation and prior financial applications.
+
+## 8. Citations
+
+1\.
+
+Robert Cull & Jonathan Morduch. (2017). *Microfinance and Economic Development* (Policy Research Working Paper 8252). <https://documents1.worldbank.org/curated/en/107171511360386561/pdf/WPS8252.pdf>
+
+2\.
+
+Kassim, S. H., & Rahman, M. (2018). Handling default risks in microfinance: The case of bangladesh. *Qualitative Research in Financial Markets, 10*(4), 363-380. <doi:https://doi.org/10.1108/QRFM-03-2017-0018>
+
+3\.
+
+Jose G. Moltalvo & Marta Reynal-Querol. (2020). *Gender and Credit Risk: A View From the Loan Officer's Desk*. Barcelona Graduate School of Economics. <https://bse.eu/sites/default/files/working_paper_pdfs/1076_0.pdf>
+
+4\.
+
+The World Bank. (2011). *The World Bank Data Bank*. <https://databank.worldbank.org/databases/page/1?qterm=GDP>
